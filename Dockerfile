@@ -16,4 +16,4 @@ COPY jiankong_bot.py .
 COPY .env .
 
 # 启动程序
-CMD ["python", "jiankong_bot.py"]
+CMD ["python", "main.py"]
