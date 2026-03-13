@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  yunyoo-monitor:
+    build: .
+    container_name: yunyoo-monitor
+    restart: always
+    volumes:
+      - ./stock_state.json:/app/stock_state.json  # 挂载持久化文件
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
