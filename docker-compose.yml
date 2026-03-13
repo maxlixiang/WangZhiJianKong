@@ -6,7 +6,8 @@ services:
     container_name: yunyoo-monitor
     restart: always
     volumes:
-      - ./stock_state.json:/app/stock_state.json  # 挂载持久化文件
+      - ./stock_state.json:/app/stock_state.json
+      - ./tasks.json:/app/tasks.json  # 新增挂载
     logging:
       driver: "json-file"
       options:

@@ -1,0 +1,6 @@
+.env
+tasks.json
+stock_state.json
+__pycache__/
+*.pyc
+.vscode/
