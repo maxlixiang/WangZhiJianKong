@@ -1,13 +1,13 @@
-version: '3.8'
-
 services:
   yunyoo-monitor:
     build: .
     container_name: yunyoo-monitor
     restart: always
+    env_file:
+      - .env
     volumes:
       - ./stock_state.json:/app/stock_state.json
-      - ./tasks.json:/app/tasks.json  # 新增挂载
+      - ./tasks.json:/app/tasks.json
     logging:
       driver: "json-file"
       options:
