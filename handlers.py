@@ -2,8 +2,20 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import STATE_FILE, TASKS_FILE
-from monitor import check_all_sites, monitor_tasks, stock_state
+from monitor import check_all_sites, monitor_tasks, reset_acknowledged, stock_state
 from utils import restricted, save_json, state_token
+
+
+def format_status_line(status):
+    if status["in_stock"] is True:
+        stock_text = "有货"
+    elif status["in_stock"] is False:
+        stock_text = "售罄"
+    else:
+        stock_text = "未在页面中找到"
+
+    ack_text = "已停止提醒" if status["acknowledged"] else "提醒开启"
+    return f"- {status['site']} / {status['name']}：{stock_text}，{ack_text}"
 
 
 @restricted
@@ -65,9 +77,46 @@ async def del_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @restricted
 async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("正在巡检所有网页...")
-    found, total = await check_all_sites(context)
-    msg = f"发现 {found} 个补货商品。" if found > 0 else "目前全部售罄。"
-    await update.message.reply_text(f"巡检完毕。共检查 {total} 个商品，{msg}")
+    summary = await check_all_sites(context, send_alerts=True)
+
+    msg = (
+        f"巡检完毕。共检查 {summary['total']} 个商品，"
+        f"当前有货 {summary['available']} 个，"
+        f"本次发送提醒 {summary['alerted']} 条。"
+    )
+    if summary["errors"]:
+        msg += "\n\n检查失败：\n" + "\n".join(summary["errors"])
+
+    await update.message.reply_text(msg)
+
+
+@restricted
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("正在刷新库存状态...")
+    summary = await check_all_sites(context, send_alerts=False)
+
+    if not summary["statuses"]:
+        await update.message.reply_text("暂时没有可显示的监控状态。")
+        return
+
+    lines = [format_status_line(status) for status in summary["statuses"]]
+    msg = (
+        f"当前监控状态：\n\n"
+        + "\n".join(lines)
+        + f"\n\n共检查 {summary['total']} 个商品，当前有货 {summary['available']} 个。"
+    )
+    if summary["errors"]:
+        msg += "\n\n检查失败：\n" + "\n".join(summary["errors"])
+
+    await update.message.reply_text(msg, disable_web_page_preview=True)
+
+
+@restricted
+async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    changed = reset_acknowledged()
+    await update.message.reply_text(
+        f"已恢复提醒开关，共重置 {changed} 个已停止提醒的商品。现在可以运行 /check 重新巡检。"
+    )
 
 
 @restricted
@@ -77,7 +126,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/add 名字 | 链接 | 产品1, 产品2` - 添加监控\n"
         "- `/list` - 查看任务\n"
         "- `/del 序号` - 删除任务\n"
-        "- `/check` - 手动巡检\n"
+        "- `/check` - 手动巡检，并对未停止提醒的有货商品发送提醒\n"
+        "- `/status` - 刷新并查看所有监控商品的库存状态\n"
+        "- `/restore` - 恢复所有已停止的提醒\n"
         "- `/help` - 查看菜单"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -94,4 +145,4 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 stock_state[key]["acknowledged"] = True
 
         save_json(STATE_FILE, stock_state)
-        await query.edit_message_text(text="已确认补货，本轮将停止提醒。")
+        await query.edit_message_text(text="已停止提醒。该商品仍会在 /status 中显示真实库存。")

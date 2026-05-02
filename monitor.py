@@ -12,7 +12,26 @@ monitor_tasks = load_json(TASKS_FILE, [])
 stock_state = load_json(STATE_FILE, {})
 
 
-async def check_all_sites(context):
+def make_state_id(site, product_name):
+    return f"{site} | {product_name}"
+
+
+def get_monitored_products():
+    products = []
+    for task in monitor_tasks:
+        for product_name in task["targets"]:
+            products.append(
+                {
+                    "site": task["site_name"],
+                    "url": task["url"],
+                    "name": product_name,
+                    "state_id": make_state_id(task["site_name"], product_name),
+                }
+            )
+    return products
+
+
+async def check_all_sites(context, send_alerts=True):
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -21,11 +40,19 @@ async def check_all_sites(context):
         )
     }
 
-    found_count, total_products = 0, 0
+    summary = {
+        "total": 0,
+        "available": 0,
+        "alerted": 0,
+        "errors": [],
+        "statuses": [],
+    }
     has_changes = False
 
     for task in monitor_tasks:
         site, url, targets = task["site_name"], task["url"], task["targets"]
+        seen_targets = set()
+
         try:
             async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
@@ -44,38 +71,85 @@ async def check_all_sites(context):
                 if product_name not in targets:
                     continue
 
-                total_products += 1
-                state_id = f"{site} | {product_name}"
+                seen_targets.add(product_name)
+                summary["total"] += 1
+
+                state_id = make_state_id(site, product_name)
                 footer = item.find("div", class_="card-footer")
                 footer_text = footer.get_text(strip=True) if footer else ""
                 is_available = "售罄" not in footer_text
+                acknowledged = stock_state.get(state_id, {}).get("acknowledged", False)
 
                 if is_available:
-                    if not stock_state.get(state_id, {}).get("acknowledged", False):
-                        stock_state[state_id] = {
-                            "in_stock": True,
-                            "acknowledged": False,
-                        }
+                    summary["available"] += 1
+                    new_state = {"in_stock": True, "acknowledged": acknowledged}
+                    if stock_state.get(state_id) != new_state:
+                        stock_state[state_id] = new_state
                         has_changes = True
-                        found_count += 1
+
+                    if send_alerts and not acknowledged:
+                        stock_state[state_id]["acknowledged"] = False
+                        has_changes = True
+                        summary["alerted"] += 1
                         await send_stock_alert(context, site, product_name, url)
-                elif stock_state.get(state_id, {}).get("acknowledged", False):
-                    stock_state[state_id] = {
-                        "in_stock": False,
-                        "acknowledged": False,
+                else:
+                    new_state = {"in_stock": False, "acknowledged": False}
+                    if stock_state.get(state_id) != new_state:
+                        stock_state[state_id] = new_state
+                        has_changes = True
+
+                summary["statuses"].append(
+                    {
+                        "site": site,
+                        "name": product_name,
+                        "url": url,
+                        "in_stock": is_available,
+                        "acknowledged": stock_state[state_id]["acknowledged"],
                     }
-                    has_changes = True
+                )
+
+            for product_name in targets:
+                if product_name in seen_targets:
+                    continue
+
+                state_id = make_state_id(site, product_name)
+                summary["statuses"].append(
+                    {
+                        "site": site,
+                        "name": product_name,
+                        "url": url,
+                        "in_stock": None,
+                        "acknowledged": stock_state.get(state_id, {}).get(
+                            "acknowledged",
+                            False,
+                        ),
+                    }
+                )
         except Exception as exc:
             logging.error("站点 %s 检查失败：%s", site, exc)
+            summary["errors"].append(f"{site}: {exc}")
 
     if has_changes:
         save_json(STATE_FILE, stock_state)
 
-    return found_count, total_products
+    return summary
+
+
+def reset_acknowledged():
+    changed = 0
+    for state in stock_state.values():
+        if state.get("acknowledged", False):
+            state["acknowledged"] = False
+            changed += 1
+
+    if changed:
+        save_json(STATE_FILE, stock_state)
+
+    return changed
 
 
 async def send_stock_alert(context, site, name, url):
-    state_id = f"{site} | {name}"
+    state_id = make_state_id(site, name)
     keyboard = [
         [
             InlineKeyboardButton(
@@ -84,16 +158,11 @@ async def send_stock_alert(context, site, name, url):
             )
         ]
     ]
-    text = (
-        f"*补货通知：{site}*\n\n"
-        f"产品：`{name}`\n\n"
-        f"[立即前往购买]({url})"
-    )
+    text = f"补货通知：{site}\n\n产品：{name}\n\n立即前往购买：{url}"
 
     for uid in ALLOWED_USERS:
         await context.bot.send_message(
             chat_id=uid,
             text=text,
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
