@@ -1,9 +1,24 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import STATE_FILE, TASKS_FILE
+from config import CHECK_INTERVAL, STATE_FILE, TASKS_FILE
 from monitor import check_all_sites, monitor_tasks, reset_acknowledged, stock_state
 from utils import restricted, save_json, state_token
+
+MONITOR_JOB_NAME = "stock_monitor"
+
+
+def schedule_monitor_job(job_queue):
+    if job_queue.get_jobs_by_name(MONITOR_JOB_NAME):
+        return False
+
+    job_queue.run_repeating(
+        check_all_sites,
+        interval=CHECK_INTERVAL,
+        first=1,
+        name=MONITOR_JOB_NAME,
+    )
+    return True
 
 
 def format_status_line(status):
@@ -16,6 +31,27 @@ def format_status_line(status):
 
     ack_text = "已停止提醒" if status["acknowledged"] else "提醒开启"
     return f"- {status['site']} / {status['name']}：{stock_text}，{ack_text}"
+
+
+@restricted
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if schedule_monitor_job(context.job_queue):
+        await update.message.reply_text("监控系统已启动。输入 /help 查看指令。")
+    else:
+        await update.message.reply_text("监控系统已经在运行中。输入 /help 查看指令。")
+
+
+@restricted
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jobs = context.job_queue.get_jobs_by_name(MONITOR_JOB_NAME)
+    if not jobs:
+        await update.message.reply_text("当前没有正在运行的自动监控。")
+        return
+
+    for job in jobs:
+        job.schedule_removal()
+
+    await update.message.reply_text("已停止自动监控。需要恢复时运行 /start。")
 
 
 @restricted
@@ -129,6 +165,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/check` - 手动巡检，并对未停止提醒的有货商品发送提醒\n"
         "- `/status` - 刷新并查看所有监控商品的库存状态\n"
         "- `/restore` - 恢复所有已停止的提醒\n"
+        "- `/stop` - 停止自动监控\n"
         "- `/help` - 查看菜单"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
